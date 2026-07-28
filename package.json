@@ -1,0 +1,56 @@
+{
+  "name": "@3mfconsortium/mcp",
+  "version": "0.1.0-alpha.1",
+  "description": "MCP server for inspecting and validating 3MF files with lib3mf.",
+  "type": "module",
+  "license": "BSD-2-Clause",
+  "author": "3MF Consortium",
+  "keywords": [
+    "3mf",
+    "mcp",
+    "model-context-protocol",
+    "additive-manufacturing",
+    "lib3mf"
+  ],
+  "bin": {
+    "3mf-mcp": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "npm run check && npm test && npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@3mfconsortium/lib3mf": "2.6.0-alpha.2",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "express": "^5.1.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.10"
+  }
+}
