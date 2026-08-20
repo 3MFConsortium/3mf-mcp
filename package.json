@@ -44,6 +44,7 @@
     "@3mfconsortium/lib3mf": "2.6.0-alpha.2",
     "@modelcontextprotocol/sdk": "1.30.0",
     "express": "^5.1.0",
+    "playwright-core": "^1.62.1",
     "zod": "^4.1.12"
   },
   "devDependencies": {

@@ -38,6 +38,12 @@ describe("MCP protocol", () => {
         "validate_model",
         "inspect_slices",
         "inspect_beam_lattices",
+        "review_model",
+        "open_model_viewer",
+        "control_model_viewer",
+        "get_viewer_session",
+        "get_viewer_result",
+        "close_model_viewer",
       ]),
     );
 
@@ -55,6 +61,20 @@ describe("MCP protocol", () => {
     expect(summary.isError).not.toBe(true);
     expect((summary.structuredContent as any).counts.triangles).toBe(12);
 
+    const review = await client.callTool({
+      name: "review_model",
+      arguments: { model_id: modelId, include_visuals: false },
+    });
+    expect(review.isError).not.toBe(true);
+    expect(review.structuredContent).toMatchObject({
+      modelId,
+      status: "passed",
+      findingCount: 0,
+      objects: { total: 2 },
+      buildItems: { total: 1 },
+      visuals: { requested: false, completed: false },
+    });
+
     const objects = await client.callTool({
       name: "list_objects",
       arguments: { model_id: modelId, offset: 0, limit: 1 },
@@ -67,6 +87,60 @@ describe("MCP protocol", () => {
       nextOffset: 1,
     });
     expect((objects.structuredContent as any).objects.items).toHaveLength(1);
+
+    const viewer = await client.callTool({
+      name: "open_model_viewer",
+      arguments: { model_id: modelId, preset: "isometric" },
+    });
+    expect(viewer.isError).not.toBe(true);
+    const viewerSession = viewer.structuredContent as any;
+    expect(viewerSession.url).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect((await fetch(viewerSession.url)).status).toBe(200);
+
+    const capturePromise = client.callTool({
+      name: "control_model_viewer",
+      arguments: {
+        viewer_session_id: viewerSession.viewerSessionId,
+        command: "capture.png",
+        arguments: {},
+        wait_ms: 2_000,
+      },
+    });
+    let captureCommand: any;
+    for (let attempt = 0; attempt < 10 && !captureCommand; attempt += 1) {
+      const pending = await fetch(new URL("commands", viewerSession.url)).then((response) =>
+        response.json(),
+      );
+      captureCommand = pending.commands?.[0];
+      if (!captureCommand) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(captureCommand.command).toBe("capture.png");
+    const png = Buffer.from("fake-png");
+    await fetch(new URL(`captures/${captureCommand.id}`, viewerSession.url), {
+      method: "PUT",
+      body: png,
+    });
+    await fetch(new URL(`results/${captureCommand.id}`, viewerSession.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ok: true, result: { captureUrl: "local" } }),
+    });
+    const captured = await capturePromise;
+    expect(captured.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "image",
+          mimeType: "image/png",
+          data: png.toString("base64"),
+        }),
+      ]),
+    );
+
+    const closedViewer = await client.callTool({
+      name: "close_model_viewer",
+      arguments: { viewer_session_id: viewerSession.viewerSessionId },
+    });
+    expect(closedViewer.structuredContent).toMatchObject({ closed: true });
 
     const compliance = await client.callTool({
       name: "check_compliance",

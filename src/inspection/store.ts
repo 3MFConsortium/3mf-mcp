@@ -80,6 +80,7 @@ export class ModelStore {
       loadedAt: new Date(now).toISOString(),
       expiresAt: new Date(now + this.ttlMs).toISOString(),
       report,
+      sourceBytes: bytes,
     };
     this.models.set(stored.id, stored);
     this.evictOverflow();

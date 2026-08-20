@@ -64,7 +64,10 @@ export const runHttpServer = async (config: AppConfig): Promise<Server> => {
         };
         // SDK 1.x's HTTP transport and generic transport declarations disagree
         // under exactOptionalPropertyTypes even though the runtime contract matches.
-        await createMcpServer(store).connect(transport as any);
+        await createMcpServer(store, {
+          viewerModeByDefault: config.viewerMode,
+          ...(config.chromePath ? { chromePath: config.chromePath } : {}),
+        }).connect(transport as any);
       }
 
       if (!transport) {

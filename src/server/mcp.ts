@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { InspectionReport, ObjectSummary, StoredModel } from "../inspection/types.js";
 import { ModelStore, summaryView } from "../inspection/store.js";
+import { ViewerSessionManager } from "../viewer/sessionManager.js";
+import type { ViewerMode } from "../viewer/sessionManager.js";
 
 const success = (value: unknown) => {
   const structuredContent =
@@ -21,6 +23,66 @@ const failure = (error: unknown) => ({
     },
   ],
 });
+
+const imageSuccess = (value: Record<string, unknown>, png: Buffer) => ({
+  content: [
+    { type: "image" as const, data: png.toString("base64"), mimeType: "image/png" },
+    { type: "text" as const, text: JSON.stringify(value, null, 2) },
+  ],
+  structuredContent: value,
+});
+
+interface LabeledImage {
+  label: string;
+  png: Buffer;
+}
+
+const reviewSuccess = (value: Record<string, unknown>, images: LabeledImage[]) => {
+  const content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: "image/png" }
+  > = [{ type: "text", text: JSON.stringify(value, null, 2) }];
+  for (const image of images) {
+    content.push(
+      { type: "text", text: `Review view: ${image.label}` },
+      { type: "image", data: image.png.toString("base64"), mimeType: "image/png" },
+    );
+  }
+  return { content, structuredContent: value };
+};
+
+const reviewFindings = (report: InspectionReport) => {
+  const findings = [
+    ...report.validation.findings.map((finding) => ({ source: "preflight", ...finding })),
+    ...report.validation.strict.errors.map((diagnostic) => ({
+      source: "strict",
+      severity: "error" as const,
+      ...diagnostic,
+    })),
+    ...report.validation.strict.warnings.map((diagnostic) => ({
+      source: "strict",
+      severity: "warning" as const,
+      ...diagnostic,
+    })),
+    ...report.validation.nonStrict.errors.map((diagnostic) => ({
+      source: "non-strict",
+      severity: "error" as const,
+      ...diagnostic,
+    })),
+    ...report.validation.nonStrict.warnings.map((diagnostic) => ({
+      source: "non-strict",
+      severity: "warning" as const,
+      ...diagnostic,
+    })),
+  ];
+  return {
+    total: findings.length,
+    errorCount: findings.filter((finding) => finding.severity === "error").length,
+    warningCount: findings.filter((finding) => finding.severity === "warning").length,
+    items: findings.slice(0, 50),
+    omitted: Math.max(0, findings.length - 50),
+  };
+};
 
 const loadedView = (model: StoredModel) => ({
   modelId: model.id,
@@ -72,7 +134,18 @@ const objectSummaryView = (object: ObjectSummary) => ({
   componentCount: object.components.length,
 });
 
-export const createMcpServer = (store: ModelStore): McpServer => {
+export interface McpServerOptions {
+  viewerModeByDefault?: ViewerMode;
+  chromePath?: string;
+  /** @deprecated Use viewerModeByDefault. */
+  openBrowserByDefault?: boolean;
+}
+
+export const createMcpServer = (
+  store: ModelStore,
+  options: McpServerOptions = {},
+): McpServer => {
+  const viewers = new ViewerSessionManager(store);
   const server = new McpServer({
     name: "3mf-mcp",
     version: "0.1.0-alpha.1",
@@ -396,6 +469,289 @@ export const createMcpServer = (store: ModelStore): McpServer => {
         return failure(error);
       }
     },
+  );
+
+  server.registerTool(
+    "review_model",
+    {
+      title: "Review 3MF model",
+      description:
+        "Build a compact structural and compliance review, then optionally render standard headless views and return them as MCP images. Visual failure does not discard the structural review.",
+      inputSchema: {
+        model_id: z.string().uuid(),
+        include_visuals: z.boolean().default(true),
+        views: z
+          .array(z.enum(["front", "back", "left", "right", "top", "bottom", "isometric"]))
+          .min(1)
+          .max(6)
+          .default(["isometric", "front", "top"]),
+        resource_id: z.number().int().nonnegative().optional(),
+        isolate: z.boolean().default(false),
+        wireframe: z.boolean().default(false),
+        edges: z.boolean().default(true),
+      },
+    },
+    async ({
+      model_id: modelId,
+      include_visuals: includeVisuals,
+      views,
+      resource_id: resourceId,
+      isolate,
+      wireframe,
+      edges,
+    }) => {
+      try {
+        const report = store.get(modelId).report;
+        const findings = reviewFindings(report);
+        const status =
+          !report.validation.compliant ||
+          !report.validation.preflightPassed ||
+          findings.errorCount > 0
+            ? "failed"
+            : findings.warningCount > 0
+              ? "needs_attention"
+              : "passed";
+        const images: LabeledImage[] = [];
+        const visualReview: Record<string, unknown> = {
+          requested: includeVisuals,
+          completed: false,
+          views: [],
+          browserDiagnostics: [],
+        };
+        let viewerSessionId: string | null = null;
+        if (includeVisuals) {
+          try {
+            const session = await viewers.open(modelId, {
+              mode: "headless",
+              ...(options.chromePath ? { chromePath: options.chromePath } : {}),
+              preset: views[0] ?? "isometric",
+              ...(resourceId === undefined ? {} : { resourceId }),
+              isolate,
+              wireframe,
+              edges,
+            });
+            viewerSessionId = session.viewerSessionId;
+            const capturedViews: Array<Record<string, unknown>> = [];
+            for (const view of views) {
+              const camera = await viewers.command(
+                viewerSessionId,
+                "camera.setPreset",
+                { preset: view },
+              );
+              if (!("ok" in camera) || camera.ok !== true) {
+                throw new Error(`Unable to set the ${view} review camera.`);
+              }
+              const capture = await viewers.command(viewerSessionId, "capture.png", {});
+              if (!("ok" in capture) || capture.ok !== true) {
+                throw new Error(`Unable to capture the ${view} review view.`);
+              }
+              const png = viewers.capture(viewerSessionId, capture.commandId);
+              if (!png) throw new Error(`The ${view} review capture was not retained.`);
+              const result =
+                capture.result && typeof capture.result === "object"
+                  ? (capture.result as Record<string, unknown>)
+                  : {};
+              images.push({ label: view, png });
+              capturedViews.push({
+                view,
+                width: result.width ?? null,
+                height: result.height ?? null,
+                mimeType: result.mimeType ?? "image/png",
+              });
+            }
+            const viewerStatus = viewers.status(viewerSessionId);
+            visualReview.completed = true;
+            visualReview.views = capturedViews;
+            visualReview.browserDiagnostics = viewerStatus.browserDiagnostics;
+          } catch (error) {
+            visualReview.error = error instanceof Error ? error.message : String(error);
+            if (viewerSessionId) {
+              visualReview.browserDiagnostics = viewers.status(viewerSessionId).browserDiagnostics;
+            }
+          } finally {
+            if (viewerSessionId) viewers.close(viewerSessionId);
+          }
+        }
+        return reviewSuccess(
+          {
+            modelId,
+            status,
+            summary: summaryView(report),
+            findingCount: findings.total,
+            omittedFindingCount: findings.omitted,
+            findings: findings.items,
+            objects: {
+              total: report.objects.length,
+              items: report.objects.slice(0, 100).map(objectSummaryView),
+              omitted: Math.max(0, report.objects.length - 100),
+            },
+            buildItems: {
+              total: report.buildItems.length,
+              items: report.buildItems.slice(0, 100),
+              omitted: Math.max(0, report.buildItems.length - 100),
+            },
+            visuals: visualReview,
+          },
+          images,
+        );
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "open_model_viewer",
+    {
+      title: "Open model in 3MF Viewer",
+      description:
+        "Create a temporary loopback viewer session for a loaded model. Choose URL-only, system-browser, or agent-controlled headless mode when spatial geometry, assemblies, materials, slices, beam lattices, or validation findings benefit from visual inspection.",
+      inputSchema: {
+        model_id: z.string().uuid(),
+        viewer_url: z.string().url().optional(),
+        preset: z
+          .enum(["front", "back", "left", "right", "top", "bottom", "isometric"])
+          .default("isometric"),
+        resource_id: z.number().int().nonnegative().optional(),
+        isolate: z.boolean().default(false),
+        wireframe: z.boolean().optional(),
+        edges: z.boolean().optional(),
+        viewer_mode: z.enum(["url", "system", "headless"]).optional(),
+        /** @deprecated Prefer viewer_mode. */
+        open_browser: z.boolean().optional(),
+      },
+    },
+    async ({
+      model_id: modelId,
+      viewer_url: viewerUrl,
+      preset,
+      resource_id: resourceId,
+      isolate,
+      wireframe,
+      edges,
+      viewer_mode: viewerMode,
+      open_browser: openBrowser,
+    }) => {
+      try {
+        const mode =
+          viewerMode ??
+          (openBrowser === undefined
+            ? options.viewerModeByDefault ?? (options.openBrowserByDefault ? "system" : "url")
+            : openBrowser
+              ? "system"
+              : "url");
+        return success(
+          await viewers.open(modelId, {
+            ...(viewerUrl === undefined ? {} : { viewerUrl }),
+            preset,
+            ...(resourceId === undefined ? {} : { resourceId }),
+            isolate,
+            ...(wireframe === undefined ? {} : { wireframe }),
+            ...(edges === undefined ? {} : { edges }),
+            mode,
+            ...(options.chromePath ? { chromePath: options.chromePath } : {}),
+          }),
+        );
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "control_model_viewer",
+    {
+      title: "Control an open 3MF Viewer",
+      description:
+        "Send a versioned viewer-control command to an open viewer session and wait briefly for its result. A completed capture.png is returned directly as MCP image content and also includes a temporary PNG URL.",
+      inputSchema: {
+        viewer_session_id: z.string().uuid(),
+        command: z.enum([
+          "viewer.getCapabilities",
+          "viewer.getState",
+          "model.clear",
+          "scene.getManifest",
+          "scene.select",
+          "scene.setVisibility",
+          "scene.isolate",
+          "scene.resetVisibility",
+          "camera.fit",
+          "camera.reset",
+          "camera.get",
+          "camera.set",
+          "camera.setPreset",
+          "render.setOptions",
+          "slice.setIndex",
+          "beamLattice.setMode",
+          "capture.png",
+        ]),
+        arguments: z.record(z.string(), z.unknown()).default({}),
+        wait_ms: z.number().int().min(0).max(60_000).default(15_000),
+      },
+    },
+    async ({
+      viewer_session_id: viewerSessionId,
+      command,
+      arguments: argumentsValue,
+      wait_ms: waitMs,
+    }) => {
+      try {
+        const result = await viewers.command(viewerSessionId, command, argumentsValue, waitMs);
+        if (command === "capture.png" && "commandId" in result) {
+          const png = viewers.capture(viewerSessionId, result.commandId);
+          if (png) return imageSuccess(result as unknown as Record<string, unknown>, png);
+        }
+        return success(result);
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_viewer_session",
+    {
+      title: "Get 3MF Viewer session",
+      description: "Check whether a viewer session is connected and rendered.",
+      inputSchema: { viewer_session_id: z.string().uuid() },
+    },
+    async ({ viewer_session_id: viewerSessionId }) => {
+      try {
+        return success(viewers.status(viewerSessionId));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_viewer_result",
+    {
+      title: "Get 3MF Viewer command result",
+      description: "Retrieve the result of a viewer command that was still pending.",
+      inputSchema: {
+        viewer_session_id: z.string().uuid(),
+        command_id: z.string().uuid(),
+      },
+    },
+    async ({ viewer_session_id: viewerSessionId, command_id: commandId }) => {
+      try {
+        return success(viewers.result(viewerSessionId, commandId));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "close_model_viewer",
+    {
+      title: "Close 3MF Viewer session",
+      description: "Delete a temporary local viewer session and its captures.",
+      inputSchema: { viewer_session_id: z.string().uuid() },
+    },
+    async ({ viewer_session_id: viewerSessionId }) =>
+      success({ viewerSessionId, closed: viewers.close(viewerSessionId) }),
   );
 
   return server;

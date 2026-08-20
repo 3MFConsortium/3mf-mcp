@@ -12,6 +12,7 @@ describe("configuration", () => {
       host: "127.0.0.1",
       port: 3000,
       allowLocalPaths: true,
+      viewerMode: "url",
     });
   });
 
@@ -23,5 +24,14 @@ describe("configuration", () => {
 
     vi.stubEnv("MCP_ALLOW_LOCAL_PATHS", "true");
     expect(readConfig(["--http"]).allowLocalPaths).toBe(true);
+  });
+
+  it("configures viewer launch mode and Chrome", () => {
+    vi.stubEnv("MCP_VIEWER_MODE", "headless");
+    vi.stubEnv("MCP_CHROME_PATH", "/opt/chrome");
+    expect(readConfig([])).toMatchObject({
+      viewerMode: "headless",
+      chromePath: "/opt/chrome",
+    });
   });
 });

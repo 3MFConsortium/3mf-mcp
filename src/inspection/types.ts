@@ -174,4 +174,6 @@ export interface StoredModel {
   loadedAt: string;
   expiresAt: string;
   report: InspectionReport;
+  /** Original package bytes retained for local viewer sessions. */
+  sourceBytes: Uint8Array;
 }
