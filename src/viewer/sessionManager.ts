@@ -65,6 +65,7 @@ export interface OpenViewerOptions {
   edges?: boolean;
   mode?: ViewerMode;
   chromePath?: string;
+  onProgress?: (progress: Record<string, unknown>) => void | Promise<void>;
 }
 
 const openSystemBrowser = async (url: string): Promise<{ launched: boolean; error?: string }> => {
@@ -193,7 +194,7 @@ export class ViewerSessionManager {
         return { ...view, browser: await openSystemBrowser(view.url) };
       }
       if (session.mode === "headless") {
-        await this.launchHeadless(session, options.chromePath);
+        await this.launchHeadless(session, options.chromePath, options.onProgress);
         return { ...this.view(session), browser: { launched: true, headless: true } };
       }
       return { ...view, browser: { launched: false, requested: false } };
@@ -313,7 +314,11 @@ export class ViewerSessionManager {
     return executable;
   }
 
-  private async launchHeadless(session: ViewerSession, chromePath?: string): Promise<void> {
+  private async launchHeadless(
+    session: ViewerSession,
+    chromePath?: string,
+    onProgress?: OpenViewerOptions["onProgress"],
+  ): Promise<void> {
     const browser = await chromium.launch({
       executablePath: this.resolveChromePath(chromePath),
       headless: true,
@@ -339,9 +344,17 @@ export class ViewerSessionManager {
       waitUntil: "domcontentloaded",
       timeout: VIEWER_STARTUP_WAIT_MS,
     });
+    let lastProgress = "";
     while (!session.renderReady) {
       if (session.lastError) throw new Error(`Headless viewer failed: ${session.lastError}`);
       if (page.isClosed()) throw new Error("Headless viewer closed before rendering the model.");
+      if (session.loadProgress && onProgress) {
+        const serialized = JSON.stringify(session.loadProgress);
+        if (serialized !== lastProgress) {
+          lastProgress = serialized;
+          await onProgress(session.loadProgress);
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }

@@ -17,6 +17,19 @@ describe("ViewerSessionManager", () => {
     expect(page.status).toBe(200);
     expect(await page.text()).toContain("ThreeMFViewerEmbed.create");
 
+    await fetch(new URL("status", session.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        progress: { stage: "building-meshes", triangles: 12, totalTriangles: 24 },
+      }),
+    });
+    expect(manager.status(session.viewerSessionId).loadProgress).toEqual({
+      stage: "building-meshes",
+      triangles: 12,
+      totalTriangles: 24,
+    });
+
     const modelResponse = await fetch(new URL("model", session.url));
     expect(modelResponse.headers.get("content-type")).toBe("model/3mf");
     expect((await modelResponse.arrayBuffer()).byteLength).toBe(model.report.file.byteLength);

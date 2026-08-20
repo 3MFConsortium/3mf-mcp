@@ -28,6 +28,9 @@ geometry is not returned to the client, and the server does not call an LLM.
 ## Requirements
 
 - Node.js 22 or newer
+- Chrome or Chromium when using headless visual review
+- Access to `https://3mfviewer.com`, or another viewer origin configured with
+  `MCP_VIEWER_URL`, when using any viewer feature
 
 ## Install and run
 
@@ -38,6 +41,10 @@ npm ci
 npm run build
 npm start
 ```
+
+Use `npm ci` for local verification and CI so installs match the committed
+lockfile exactly. When dependencies change, run `npm install` and commit the
+updated `package-lock.json` together with `package.json`.
 
 The default transport is stdio. An MCP client configuration can launch it as:
 
@@ -52,14 +59,16 @@ The default transport is stdio. An MCP client configuration can launch it as:
 }
 ```
 
-After npm publication, the executable is also available as `3mf-mcp` from the
-`@3mfconsortium/mcp` package.
+The package is prepared for public npm distribution as `@3mfconsortium/mcp`.
+Its executable is named `3mf-mcp`.
 
 ## Typical workflow
 
 1. Call `load_model` with a local path or base64 data.
 2. Use the returned `modelId` with the inspection tools.
-3. Call `unload_model` when the report is no longer needed.
+3. Start with `review_model` when you want a combined structural and visual
+   assessment, or call the focused inspection tools directly.
+4. Call `unload_model` when the report is no longer needed.
 
 To visualize a loaded model, call `open_model_viewer`. Choose `viewer_mode` as
 `url`, `system`, or `headless`. The page transfers the retained 3MF bytes to the
@@ -100,7 +109,7 @@ usually a better starting point than calling each inspection tool separately.
 | `review_model` | Combine structural checks, findings, and optional standard-view images. |
 | `open_model_viewer` | Create a temporary local interactive viewer session. |
 | `control_model_viewer` | Select/isolate resources, control camera/rendering, or capture a PNG. |
-| `get_viewer_session` | Check viewer connection and render readiness. |
+| `get_viewer_session` | Check viewer connection, loading progress, render readiness, and browser diagnostics. |
 | `get_viewer_result` | Retrieve a command result that was initially pending. |
 | `close_model_viewer` | Delete a viewer session and its temporary captures. |
 
@@ -128,6 +137,11 @@ object summaries, and build items. Its status is one of `passed`,
 this server found no problem. It is not a guarantee that every printer or
 slicer will accept the file.
 
+`failed` means lib3mf compliance, deterministic preflight, or another reported
+error failed. `needs_attention` means the model passed those checks but produced
+one or more warnings. Large reviews remain bounded: up to 50 findings, 100
+objects, and 100 build items are returned, with total and omitted counts.
+
 Visual review is enabled by default. The server opens a temporary headless
 viewer, waits for the model to render, captures the requested views, and closes
 the browser session when it is done. The default views are `isometric`,
@@ -151,6 +165,8 @@ error is reported there while the structural review is still returned.
 Model loading has no geometry-duration deadline. While a complex model is
 loading, the viewer reports its current stage, available resource and triangle
 counters, and a heartbeat through the session's `loadProgress` field.
+`review_model` also forwards these updates as standard MCP progress
+notifications when the client supplies a progress token.
 
 Set `MCP_CHROME_PATH` when Chrome or Chromium is installed somewhere the server
 cannot discover automatically. Set `MCP_VIEWER_URL` to use a different viewer
@@ -158,7 +174,8 @@ deployment. These settings are shared with the lower-level viewer tools.
 
 ## Viewer sessions
 
-Viewer sessions use the control API introduced in 3MF Viewer 0.32.0. By
+Viewer sessions use the control API introduced in 3MF Viewer 0.32.0 and the
+progress events added in 0.32.1. By
 default the broker embeds `https://3mfviewer.com`; set `MCP_VIEWER_URL` or pass
 `viewer_url` to `open_model_viewer` to use another deployment.
 
@@ -172,7 +189,8 @@ Useful `control_model_viewer` commands include:
 - `scene.getManifest`, `scene.select`, `scene.setVisibility`, and `scene.isolate`
 - `camera.fit`, `camera.setPreset`, `camera.get`, and `camera.set`
 - `render.setOptions`, `slice.setIndex`, and `beamLattice.setMode`
-- `capture.png`, whose result contains a temporary loopback `captureUrl`
+- `capture.png`, which returns MCP image content and a temporary loopback
+  `captureUrl`
 
 Viewer modes are:
 
@@ -225,6 +243,7 @@ should send base64 data.
 
 Configuration:
 
+- `MCP_TRANSPORT` (`stdio` or `http`; `--http` is the equivalent CLI flag)
 - `HOST` and `PORT`
 - `MCP_MAX_FILE_BYTES` (default 100 MiB)
 - `MCP_MAX_MODELS` (default 4)
@@ -253,6 +272,10 @@ npm pack --dry-run
 Real fixtures cover component transforms, slices, large beam lattices,
 materials/colors, stdio-style in-memory MCP calls, and an end-to-end HTTP MCP
 session.
+
+GitHub Actions runs the same clean install and verification path. The explicit
+Emscripten runtime development dependencies keep npm's optional WASM peer
+resolution deterministic across clean runners.
 
 Large vertex, triangle, beam, and contour arrays are intentionally omitted.
 Indexed lib3mf accessors are used because bulk `std::vector` getters in the

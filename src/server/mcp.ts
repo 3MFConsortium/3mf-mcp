@@ -499,7 +499,7 @@ export const createMcpServer = (
       isolate,
       wireframe,
       edges,
-    }) => {
+    }, extra) => {
       try {
         const report = store.get(modelId).report;
         const findings = reviewFindings(report);
@@ -519,6 +519,27 @@ export const createMcpServer = (
           browserDiagnostics: [],
         };
         let viewerSessionId: string | null = null;
+        let progressSequence = 0;
+        const reportProgress = async (progress: Record<string, unknown>) => {
+          const progressToken = extra._meta?.progressToken;
+          if (progressToken === undefined) return;
+          const triangles = typeof progress.triangles === "number" ? progress.triangles : null;
+          const total =
+            typeof progress.totalTriangles === "number" ? progress.totalTriangles : undefined;
+          const message =
+            (typeof progress.detail === "string" && progress.detail) ||
+            (typeof progress.stage === "string" && progress.stage) ||
+            "Loading 3MF model";
+          await extra.sendNotification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: triangles ?? ++progressSequence,
+              ...(total === undefined ? {} : { total }),
+              message,
+            },
+          });
+        };
         if (includeVisuals) {
           try {
             const session = await viewers.open(modelId, {
@@ -529,6 +550,7 @@ export const createMcpServer = (
               isolate,
               wireframe,
               edges,
+              onProgress: reportProgress,
             });
             viewerSessionId = session.viewerSessionId;
             const capturedViews: Array<Record<string, unknown>> = [];
@@ -563,6 +585,7 @@ export const createMcpServer = (
             visualReview.completed = true;
             visualReview.views = capturedViews;
             visualReview.browserDiagnostics = viewerStatus.browserDiagnostics;
+            visualReview.loadProgress = viewerStatus.loadProgress;
           } catch (error) {
             visualReview.error = error instanceof Error ? error.message : String(error);
             if (viewerSessionId) {
