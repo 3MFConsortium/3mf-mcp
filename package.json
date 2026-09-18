@@ -5,6 +5,10 @@
   "type": "module",
   "license": "BSD-2-Clause",
   "author": "3MF Consortium",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3MFConsortium/3mf-mcp.git"
+  },
   "keywords": [
     "3mf",
     "mcp",
